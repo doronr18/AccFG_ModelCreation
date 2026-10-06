@@ -1,0 +1,49 @@
+#!/bin/bash
+# Stages 2-5 on LSF: pattern counts -> clusters -> labels -> model assignment.
+# Submit from anywhere with:   bsub < molecule-fg-data/cluster.lsf
+# (the "<" is required: `bsub cluster.lsf` runs the file as a plain command and ignores
+#  every #BSUB line below -- no core count, memory or time limit).
+# To start when the stage-1 FG matrix job finishes:  bsub -w 'done(fg_matrix)' < molecule-fg-data/cluster.lsf
+#
+# Exit status of the job is that of the first stage that fails. Stage 5 exits with 3 when
+# the clusters are too coarse to meet the model coverage targets; csv_outputs/
+# assignment_warnings.txt then says what to change (re-run with a larger MAX_COMPONENTS).
+
+#BSUB -J fg_clusters
+#BSUB -n 4
+#BSUB -R "span[hosts=1]"
+#BSUB -R "rusage[mem=2000]"
+#BSUB -W 4:00
+#BSUB -o fg_clusters.%J.log
+##BSUB -q your_queue_name           # uncomment and set if your site requires a queue
+#
+# Memory and time are estimates, not measurements: they scale with the number of unique FG
+# patterns. Whether rusage[mem=...] is per slot or per job, and in MB or GB, is a site
+# setting (LSF_UNIT_FOR_LIMITS / RESOURCE_RESERVE_PER_TASK); check your cluster's docs.
+
+set -euo pipefail
+
+# ---- edit these ---------------------------------------------------------------------
+REPO=$HOME/AccFG_ModelCreation           # clone of this repository
+FG_DIR=                                  # optional: stage1/fg_matrix.py output directory;
+                                         # empty = use csv_outputs/fg_presence.csv
+MAX_COMPONENTS=12                        # upper bound on the number of clusters
+SEED=0
+TOLERANCE=0.02                           # allowed |coverage - target| per model
+# module load python/3.11                # or: source ~/miniforge3/bin/activate accfg
+# --------------------------------------------------------------------------------------
+
+# Stage 3 is matrix arithmetic: let numpy's BLAS use the slots this job was given.
+export OMP_NUM_THREADS=${LSB_DJOB_NUMPROC:-4} OPENBLAS_NUM_THREADS=${LSB_DJOB_NUMPROC:-4} \
+       MKL_NUM_THREADS=${LSB_DJOB_NUMPROC:-4}
+
+cd "$REPO"
+echo "host $(hostname)  slots: ${LSB_MCPU_HOSTS:-unset}  started $(date)"
+
+# Scripts that do not take an option ignore it, so these lines also work with older copies.
+python3 molecule-fg-data/build_pattern_count_dictionary.py ${FG_DIR:+--fg-dir "$FG_DIR"}
+python3 molecule-fg-data/build_pattern_clusters.py --max-components "$MAX_COMPONENTS" --seed "$SEED"
+python3 molecule-fg-data/label_clusters.py
+python3 molecule-fg-data/assign_clusters_to_models.py --tolerance "$TOLERANCE"
+
+echo "finished $(date)"

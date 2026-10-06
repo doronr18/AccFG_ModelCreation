@@ -105,23 +105,17 @@ What it does:
 
 Important detail about the Bernoulli model:
 
-- the algorithm does not force a fixed cluster count
+- `--max-components` (default 12; `--k` is an alias) is an upper bound on the number of clusters, not a forced count
 - it fits a Bernoulli mixture to the binary FG data using EM
 - each cluster has a vector of FG probabilities, where values near 1 mean “this FG is very likely in the cluster”
 - weak components are pruned automatically using a small threshold
 - the final cluster count is therefore discovered from the data, not hard-coded by the command
 
-Why `--k 4` still appears in the command:
+What "discovered from the data" does and does not mean:
 
-- `--k` is acting as an upper bound or candidate limit for the search, not a forced answer
-- it tells the model: “do not consider more than 4 cluster components in this run”
-- the Bernoulli mixture still decides whether 1, 2, 3, or 4 clusters are actually needed
-- if the data supports only 3 clusters, the model drops the weak fourth component and reports `Discovered K = 3`
-
-This is the key distinction:
-
-- `--k 4` means “maximum components allowed”
-- the Bernoulli mixture determines the final cluster count automatically
+- a component is removed only when its mixing weight ends below the prune threshold; no model-selection criterion (such as BIC) compares different cluster counts
+- so with plenty of molecules you will usually get `--max-components` clusters back, and the count you see reflects that bound and the prune threshold rather than a statistical test
+- `Discovered K` in the log reports how many components survived pruning
 
 Output:
 
@@ -250,12 +244,18 @@ From the project root, the intended order is:
 ```bash
 python3 "molecule-fg-data/build_sample_fg_dataset.py"
 python3 "molecule-fg-data/build_pattern_count_dictionary.py"
-python3 "molecule-fg-data/build_pattern_clusters.py" --k 4 --seed 0
+python3 "molecule-fg-data/build_pattern_clusters.py" --max-components 12 --seed 0
 python3 "molecule-fg-data/label_clusters.py"
 python3 "molecule-fg-data/assign_clusters_to_models.py"
 ```
 
 That produces the full pipeline result.
+
+On an LSF cluster, `cluster.lsf` runs stages 2–5 as one job (edit the paths block at the top first):
+
+```bash
+bsub < molecule-fg-data/cluster.lsf
+```
 
 ## If `smiles.json` is missing
 

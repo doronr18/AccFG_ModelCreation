@@ -4,7 +4,9 @@ from pathlib import Path
 from rdkit import Chem
 
 ROOT = Path(__file__).resolve().parent
-OUT_PATH = ROOT / 'molecule_data' / 'pubchem_like_sample_120.csv'
+# The stage scripts fall back to molecule-fg-data/pubchem_like_sample_120.csv when
+# smiles.json is missing, so write it there.
+OUT_PATH = ROOT / 'pubchem_like_sample_120.csv'
 
 # A synthetic PubChem-like sample set with a mix of small, medium, and more complex molecules.
 SMILES_LIST = [

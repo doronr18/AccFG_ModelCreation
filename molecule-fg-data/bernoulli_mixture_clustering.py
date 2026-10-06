@@ -4,6 +4,19 @@ import numpy as np
 import pandas as pd
 
 
+def _log_joint(X: np.ndarray, means: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """log p(x, k) for every row x of X and every component k, shape (n_rows, K).
+
+    sum_j x_j log(mu_kj) + (1 - x_j) log(1 - mu_kj) equals
+    X @ (log(mu) - log(1 - mu)).T + sum_j log(1 - mu_kj), so the whole E-step is one matrix
+    product instead of K passes that each build an (n_rows, n_features) temporary. The
+    smoothing (+1e-12 inside each log) is unchanged.
+    """
+    log_mu = np.log(means + 1e-12)
+    log_1mu = np.log(1 - means + 1e-12)
+    return X @ (log_mu - log_1mu).T + log_1mu.sum(axis=1) + np.log(weights + 1e-12)
+
+
 def bernoulli_mixture_em(
     X: np.ndarray,
     n_components: int,
@@ -50,13 +63,7 @@ def bernoulli_mixture_em(
         log_likelihood_old = -np.inf
 
         for it in range(n_iter):
-            log_resp = np.zeros((n, K), dtype=float)
-            for k in range(K):
-                log_p = (
-                    X * np.log(means[k] + 1e-12)
-                    + (1 - X) * np.log(1 - means[k] + 1e-12)
-                ).sum(axis=1)
-                log_resp[:, k] = np.log(weights[k] + 1e-12) + log_p
+            log_resp = _log_joint(X, means, weights)
 
             log_resp_shift = log_resp - log_resp.max(axis=1, keepdims=True)
             resp = np.exp(log_resp_shift)
@@ -105,32 +112,41 @@ def bernoulli_mixture_em(
 
 
 def patterns_to_matrix(patterns: list[str] | np.ndarray) -> np.ndarray:
-    """Convert binary strings or numeric matrices into a 0/1 numpy array.
+    """Convert binary pattern strings, or an existing numeric 0/1 matrix, to an int8 matrix.
 
-    If a numeric matrix is already supplied, keep it as-is instead of re-wrapping every
-    character into Python ints.
+    A numeric matrix is returned as int8 without conversion. Strings are converted in one
+    pass over a single bytes buffer instead of one Python int() per character, which matters
+    with hundreds of thousands of 534-character patterns.
     """
-    if isinstance(patterns, np.ndarray):
-        arr = np.asarray(patterns, dtype=np.int8)
-        if arr.ndim == 1 and arr.size > 0 and isinstance(patterns[0], str):
-            return np.fromiter((int(ch) for ch in patterns[0]), dtype=np.int8).reshape(1, -1)
-        return arr
-
+    if isinstance(patterns, np.ndarray) and patterns.dtype.kind in 'biuf':
+        return np.asarray(patterns, dtype=np.int8)
+    patterns = list(patterns)
     if not patterns:
         return np.zeros((0, 0), dtype=np.int8)
-    if isinstance(patterns[0], str):
-        rows = [np.fromiter((int(ch) for ch in pattern), dtype=np.int8) for pattern in patterns]
-        if not rows:
-            return np.zeros((0, 0), dtype=np.int8)
-        return np.vstack(rows)
-    return np.asarray(patterns, dtype=np.int8)
+    if not isinstance(patterns[0], str):
+        return np.asarray(patterns, dtype=np.int8)
+
+    width = len(patterns[0])
+    buffer = ''.join(patterns).encode('ascii')
+    if len(buffer) != width * len(patterns):
+        raise ValueError('patterns are not all the same length')
+    bits = np.frombuffer(buffer, dtype=np.uint8) - np.uint8(ord('0'))
+    if bits.size and bits.max() > 1:
+        raise ValueError("patterns may only contain '0' and '1'")
+    return bits.astype(np.int8).reshape(len(patterns), width)
 
 
 def assign_overlapping(resp: np.ndarray, tau: float = 0.3, top_n: int | None = 2) -> list[list[int]]:
-    """Return overlapping cluster assignments for each pattern row."""
+    """Return overlapping cluster assignments for each pattern row.
+
+    Each list starts with the row's most probable cluster, which callers use as the primary
+    cluster, followed by any other cluster with posterior >= tau, in descending probability,
+    up to top_n clusters in total. The list is deliberately not sorted by cluster id: that
+    would make the lowest id the primary cluster.
+    """
     memberships: list[list[int]] = []
     for row in resp:
-        order = np.argsort(-row)
+        order = np.argsort(-row, kind='stable')
         picked = [int(order[0])]
         for cluster_id in order[1:]:
             cluster_idx = int(cluster_id)
@@ -138,7 +154,7 @@ def assign_overlapping(resp: np.ndarray, tau: float = 0.3, top_n: int | None = 2
                 break
             if row[cluster_idx] >= tau:
                 picked.append(cluster_idx)
-        memberships.append(sorted(set(picked)))
+        memberships.append(picked)
     return memberships
 
 
@@ -188,14 +204,7 @@ def cluster_pattern_counts_overlapping(
         print(f'Discovered K = {K}')
         print(f'Weights: {np.round(weights, 3).tolist()}')
 
-    X_patterns = patterns_to_matrix(patterns)
-    pattern_level_resp = np.zeros((len(patterns), K), dtype=float)
-    for k in range(K):
-        log_p = (
-            X_patterns * np.log(means[k] + 1e-12)
-            + (1 - X_patterns) * np.log(1 - means[k] + 1e-12)
-        ).sum(axis=1)
-        pattern_level_resp[:, k] = np.log(weights[k] + 1e-12) + log_p
+    pattern_level_resp = _log_joint(X.astype(np.float64), means, weights)
 
     pattern_level_resp -= pattern_level_resp.max(axis=1, keepdims=True)
     pattern_level_resp = np.exp(pattern_level_resp)

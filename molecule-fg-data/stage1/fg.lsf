@@ -1,0 +1,57 @@
+#!/bin/bash
+# Stage 2 on LSF: AccFG functional-group matrix over the sampled SMILES.
+# Submit with:   bsub < fg.lsf               (the "<" is required -- see RUNBOOK.md)
+# After stage 1: bsub -w 'done(extract_smiles)' < fg.lsf
+#
+# Sizing, measured on real molecules (one core of a small VM; yours will differ):
+#   speed   ~100 mol/s per worker on Python 3.9 / AccFG 0.0.7  ->  5M on 16 workers ~ 55 min
+#           ~200 mol/s per worker on Python 3.10+ / AccFG 0.1.0 ->  5M on 16 workers ~ 25 min
+#           (both versions give identical results)
+#   memory  ~210 MB peak per worker, plus ~150 MB for the main process
+# Resumable: if this job hits its -W limit, resubmit it unchanged. Finished parts are
+# kept and only the remaining batches run.
+
+#BSUB -J fg_matrix
+#BSUB -n 16
+#BSUB -R "span[hosts=1]"
+#BSUB -R "rusage[mem=500]"
+#BSUB -W 2:00
+#BSUB -o fg_matrix.%J.log
+##BSUB -q your_queue_name           # uncomment and set if your site requires a queue
+#
+# span[hosts=1] matters: the script uses worker processes, which cannot cross nodes.
+# Without it, LSF may scatter the 16 slots over several nodes and the job would run on
+# only the first node's share.
+#
+# rusage[mem=500]: ~500 MB reserved per slot gives over 2x headroom on the measured peak.
+# Whether LSF reads this per slot or per job, and in MB or GB, is a site setting
+# (LSF_UNIT_FOR_LIMITS / RESOURCE_RESERVE_PER_TASK). Check your cluster's documentation.
+# If it is per job, use about 8000 for 16 slots. Add "#BSUB -M <limit>" if your site
+# requires a hard limit.
+
+set -euo pipefail
+
+# ---- edit these ---------------------------------------------------------------------
+SCRIPTS=$HOME/AccFG_ModelCreation/molecule-fg-data/stage1   # where fg_matrix.py lives
+SMILES_DIR=/path/to/scratch/smiles       # stage 1 output
+FG_DIR=/path/to/scratch/fg               # output dataset
+# module load python/3.12                # or: source ~/miniforge3/bin/activate accfg
+# --------------------------------------------------------------------------------------
+
+# Keep each worker single-threaded. Several libraries start one thread per core of the
+# whole node unless told otherwise, which competes with the 16 worker processes.
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+
+echo "host $(hostname)  slots: ${LSB_MCPU_HOSTS:-unset}  started $(date)"
+
+# Fail in seconds, not mid-run, if AccFG cannot be loaded on this compute node. This goes
+# through fg_matrix's own import, which works even without the X11 libraries
+# (libXrender / libXext) that a plain `import accfg` needs.
+python -c "import sys; sys.path.insert(0, '$SCRIPTS'); import fg_matrix; \
+print('accfg OK,', len(fg_matrix.build_afg(verbose=True).dict_fgs), 'FGs')"
+
+# -j is omitted on purpose: the script reads the slots LSF granted (bsub -n).
+python "$SCRIPTS/fg_matrix.py" "$SMILES_DIR" -o "$FG_DIR" --batch 20000
+
+echo "finished $(date)"
+echo "rejects: $(cat "$FG_DIR"/_rejects/*.txt 2>/dev/null | wc -l)"

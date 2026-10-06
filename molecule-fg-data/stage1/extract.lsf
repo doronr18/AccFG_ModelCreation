@@ -1,0 +1,29 @@
+#!/bin/bash
+# Stage 1 on LSF: sample 3% of the SMILES from every .jsonl file.
+# Submit with:   bsub < extract.lsf          (the "<" is required -- see RUNBOOK.md)
+#
+# I/O-bound: it reads every file, so more cores help only until the filesystem saturates.
+# 8 is plenty. Memory is negligible (well under 100 MB per worker).
+
+#BSUB -J extract_smiles
+#BSUB -n 8
+#BSUB -R "span[hosts=1]"
+#BSUB -W 1:00
+#BSUB -o extract_smiles.%J.log
+##BSUB -q your_queue_name           # uncomment and set if your site requires a queue
+
+set -euo pipefail
+
+# ---- edit these ---------------------------------------------------------------------
+SCRIPTS=$HOME/AccFG_ModelCreation/molecule-fg-data/stage1   # where extract_smiles.py lives
+JSONL_DIR=/path/to/jsonl                 # the 355 input files
+SMILES_DIR=/path/to/scratch/smiles       # output; scratch is usually better than $HOME
+# module load python/3.12                # or: source ~/miniforge3/bin/activate accfg
+# --------------------------------------------------------------------------------------
+
+echo "host $(hostname)  slots: ${LSB_MCPU_HOSTS:-unset}  started $(date)"
+
+# -j is omitted on purpose: the script reads the slots LSF granted (bsub -n).
+python "$SCRIPTS/extract_smiles.py" "$JSONL_DIR" -o "$SMILES_DIR" --resume
+
+echo "finished $(date)"
