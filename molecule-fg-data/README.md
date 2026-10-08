@@ -22,6 +22,8 @@ This is the location that the scripts are written to read from by default.
 - `build_pattern_clusters.py` — clusters binary FG patterns
 - `label_clusters.py` — decodes cluster patterns into functional-group labels
 - `assign_clusters_to_models.py` — assigns cluster coverage to model buckets
+- `error_distributions.py` — samples one ground-truth error per molecule per model
+- `plot_error_distributions.py` — plots every sampled error per model, coloured by FG cluster
 - `patterns.py` — shared utilities for pattern generation/counting
 - `bernoulli_mixture_clustering.py` — actual overlapping Bernoulli-mixture clustering logic
 - `csv_outputs/` — all generated CSV outputs live here
@@ -211,6 +213,49 @@ If no assignment can give every model its exclusive share, stage 5 writes `assig
 
 If any model ends more than `--tolerance` (default `0.02`, i.e. ±2 percentage points) from its target, the clusters are too coarse for the targets. All outputs are still written, but the script then prints a message naming each model that misses and the cluster sizes, saying to re-run `build_pattern_clusters.py` with a larger `--max-components`, saves it to `csv_outputs/assignment_warnings.txt`, and exits with status **3**. `within_tolerance` in the report shows which models pass.
 
+## Stage 6: sample a ground-truth error per molecule per model
+
+Script:
+
+- `error_distributions.py`
+
+What it does:
+
+- gives every model two normal error distributions: in-domain, centred on `avg_error_in` with std `std_error_in`, and out-of-domain, centred 3 std higher (`avg_error_in + 3 * std_error_in`)
+- a molecule is in-domain for a model when its pattern is in one of the model's clusters (`pattern_cluster_model_map.csv`)
+- in-domain: molecules with the same FGs land in the same range of the distribution, and molecules with similar FGs land close together (`--fg-weight`, default 0.8, sets how strongly)
+- out-of-domain: patterns are ranked by their minimum Hamming distance to the model's in-domain patterns; the closest take the low end of the out-of-domain distribution
+- each molecule adds a small jitter of its own (`--jitter`, default 0.2 std); errors below 0 are clipped (`--no-clip` keeps them)
+- prints the target vs sampled mean and std for every model and domain
+
+Inputs:
+
+- `csv_outputs/pubchem_like_pattern_counts.csv`
+- `csv_outputs/molecule_patterns.csv`
+- `csv_outputs/pattern_clusters.csv`
+- `csv_outputs/pattern_cluster_model_map.csv`
+- `csv_outputs/model_specs.csv` — needs `avg_error_in`; `std_error_in` is optional (`--std`, default 0.05)
+
+Outputs:
+
+- `csv_outputs/molecule_model_error_table.csv` — one row per (molecule, model): `cid`, `pattern_index`, `model_name`, `domain_flag`, `nearest_distance`, `nearest_reference_cluster`, `distance_rank`, `error_mean`, `error_std`, `sampled_error`
+- `csv_outputs/pattern_model_error_table.csv` — one row per (pattern, model) with its distance, rank and position in the distribution
+
+### Plotting the errors
+
+`plot_error_distributions.py` reads `molecule_model_error_table.csv` and writes to `csv_outputs/figures/`:
+
+- `error_points.png` — one panel per model, all on the same axes: x = molecules grouped by FG cluster then pattern (the same order in every panel), y = sampled error, one dot per molecule
+- `error_points_<model>.png` — each panel on its own, on the same axes
+- `error_histograms.png` — one histogram per model, same bins and axes, stacked by cluster
+- `error_plot_summary.csv` — n, mean, std, min, max of the error per model, cluster and domain
+
+A molecule's colour is its pattern's primary cluster (`pattern_clusters.csv`); the `--top-groups` largest clusters (default 7, the most colours that stay distinguishable) get their own colour and the rest are grey "Other". The legend names each cluster's common FGs from `cluster_summary.csv`. Dashed and dotted lines mark the in-domain and out-of-domain means. `--max-points N` plots N molecules per model (the same ones in every panel) when every point is too slow; the histograms and the summary always use all of them.
+
+```bash
+python3 "molecule-fg-data/plot_error_distributions.py"
+```
+
 ## The model rule file
 
 The model rules live in:
@@ -222,6 +267,8 @@ The file contains one row per model:
 - `model_name`
 - `target_coverage` — the fraction of clustered molecules the model should cover
 - `min_fgs` / `max_fgs` — optional, and ignored by the assignment
+- `avg_error_in` — the model's average in-domain error (stage 6)
+- `std_error_in` — optional std of both error distributions (stage 6; default 0.05)
 
 Important modeling note:
 
@@ -241,6 +288,8 @@ python3 "molecule-fg-data/build_pattern_count_dictionary.py"
 python3 "molecule-fg-data/build_pattern_clusters.py" --max-components 12 --seed 0
 python3 "molecule-fg-data/label_clusters.py"
 python3 "molecule-fg-data/assign_clusters_to_models.py"
+python3 "molecule-fg-data/error_distributions.py"
+python3 "molecule-fg-data/plot_error_distributions.py"
 ```
 
 That produces the full pipeline result.
