@@ -8,11 +8,13 @@ Every model has an in-domain and an out-of-domain normal distribution:
 Each molecule gets one sampled error per model. Where in the distribution it lands is
 decided per FG pattern, so molecules with the same FGs come from the same range:
 
-- in-domain: each model gives every FG a random effect. A pattern's score is the sum of
-  its FGs' effects, so patterns sharing FGs get correlated scores (correlation = cosine
-  similarity of the FG vectors), plus some per-pattern noise so the match is not 100%.
+- each model gives every FG cluster (the pattern's primary cluster) and every FG a random
+  effect. A pattern's score is its cluster's effect plus the sum of its FGs' effects plus
+  some per-pattern noise, so each FG bunch sits in its own part of the distribution,
+  patterns sharing FGs get correlated scores, and the match is not 100%.
+- in-domain: patterns are ranked by score.
 - out-of-domain: patterns are ranked by their minimum Hamming distance to any of the
-  model's in-domain FG vectors (closest first, FG score breaks ties), so closer patterns
+  model's in-domain FG vectors (closest first, score breaks ties), so closer patterns
   sample from the lower end of the out-of-domain distribution.
 
 The rank is molecule-weighted and mapped through the normal quantile function, so each
@@ -187,6 +189,16 @@ def fg_score(bits: np.ndarray, rng: np.random.Generator, block: int = 65536) -> 
     return score / np.sqrt(np.maximum(bits.sum(axis=1), 1))
 
 
+def cluster_score(pattern_ids: np.ndarray, cluster_of_pattern: dict[int, int], rng: np.random.Generator) -> np.ndarray:
+    """One random effect per primary cluster; a pattern with no cluster gets one of its own."""
+    cluster = np.array([cluster_of_pattern.get(int(i), -1) for i in pattern_ids], dtype=np.int64)
+    ids, inverse = np.unique(cluster, return_inverse=True)
+    score = rng.standard_normal(len(ids))[inverse]
+    unclustered = cluster < 0
+    score[unclustered] = rng.standard_normal(int(unclustered.sum()))
+    return score
+
+
 def build_pattern_positions(
     specs: pd.DataFrame,
     domains: dict[str, set],
@@ -195,20 +207,24 @@ def build_pattern_positions(
     counts: np.ndarray,
     cluster_of_pattern: dict[int, int],
     pattern_rngs: list[np.random.Generator],
+    cluster_weight: float,
     fg_weight: float,
     jitter: float,
 ) -> pd.DataFrame:
     """Place every (pattern, model) pair in that model's in- or out-of-domain distribution."""
     n_patterns = len(pattern_ids)
     n_fgs = bits.sum(axis=1)
+    noise_weight = 1.0 - cluster_weight - fg_weight
     frames = []
     for spec, rng in zip(specs.itertuples(index=False), pattern_rngs):
         in_mask = np.isin(pattern_ids, np.fromiter(domains[spec.model_name], dtype=np.int64))
         in_idx = np.flatnonzero(in_mask)
         out_idx = np.flatnonzero(~in_mask)
 
-        # Same FGs -> same score; shared FGs -> correlated score; the noise keeps it below 100%.
-        score = np.sqrt(fg_weight) * fg_score(bits, rng) + np.sqrt(1.0 - fg_weight) * rng.standard_normal(n_patterns)
+        # Same cluster -> same range; shared FGs -> correlated score; the noise keeps it below 100%.
+        score = (np.sqrt(cluster_weight) * cluster_score(pattern_ids, cluster_of_pattern, rng)
+                 + np.sqrt(fg_weight) * fg_score(bits, rng)
+                 + np.sqrt(noise_weight) * rng.standard_normal(n_patterns))
 
         distance, nearest = nearest_in_domain(bits, in_mask)
 
@@ -250,21 +266,24 @@ def build_model_error_table(
     pattern_output_path: str | Path | None = DEFAULT_OUTPUT_DIR / 'pattern_model_error_table.csv',
     seed: int = 0,
     default_std: float = 0.05,
-    fg_weight: float = 0.8,
+    cluster_weight: float = 0.6,
+    fg_weight: float = 0.3,
     jitter: float = 0.2,
     min_error: float | None = 0.0,
     chunksize: int = 50_000,
 ) -> pd.DataFrame:
     """Write one sampled error per (molecule, model) and return a per-model summary.
 
-    fg_weight: share of a pattern's position that comes from its FGs (1.0 = identical
-        FG overlap gives identical position). The rest is per-pattern noise.
+    cluster_weight: share of a pattern's position that comes from its primary FG cluster,
+        so each cluster occupies its own part of the distribution.
+    fg_weight: share that comes from its FGs (patterns sharing FGs land close together).
+        The rest (1 - cluster_weight - fg_weight) is per-pattern noise.
     jitter: share (in std units) of each molecule's error that is its own noise, so
         molecules with the same FGs land in the same range but not on the same value.
     min_error: errors below this are clipped (None = no clipping).
     """
-    if not 0.0 <= fg_weight <= 1.0 or not 0.0 <= jitter < 1.0:
-        raise ValueError('fg_weight must be in [0, 1] and jitter in [0, 1)')
+    if min(cluster_weight, fg_weight) < 0.0 or cluster_weight + fg_weight > 1.0 or not 0.0 <= jitter < 1.0:
+        raise ValueError('cluster_weight and fg_weight must be >= 0 and sum to at most 1, and jitter in [0, 1)')
 
     specs = load_model_specs(model_specs_path, default_std)
     model_names = specs['model_name'].tolist()
@@ -285,7 +304,7 @@ def build_model_error_table(
     molecule_rngs = [np.random.default_rng(s) for s in seeds[1::2]]
 
     patterns = build_pattern_positions(
-        specs, domains, pattern_ids, bits, counts, cluster_of_pattern, pattern_rngs, fg_weight, jitter,
+        specs, domains, pattern_ids, bits, counts, cluster_of_pattern, pattern_rngs, cluster_weight, fg_weight, jitter,
     )
     if pattern_output_path is not None:
         Path(pattern_output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -373,7 +392,10 @@ def main():
     parser.add_argument('--pattern-output', type=str, default=str(DEFAULT_OUTPUT_DIR / 'pattern_model_error_table.csv'))
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--std', type=float, default=0.05, help='std used when model_specs.csv has no std_error_in')
-    parser.add_argument('--fg-weight', type=float, default=0.8, help='share of the error position driven by FGs (0-1)')
+    parser.add_argument('--cluster-weight', type=float, default=0.6,
+                        help='share of the error position driven by the FG cluster (0-1)')
+    parser.add_argument('--fg-weight', type=float, default=0.3,
+                        help='share driven by the individual FGs (0-1); the rest is per-pattern noise')
     parser.add_argument('--jitter', type=float, default=0.2, help='per-molecule noise, in std units (0-1)')
     parser.add_argument('--min-error', type=float, default=0.0, help='clip errors below this value')
     parser.add_argument('--no-clip', action='store_true', help='allow negative errors')
@@ -390,6 +412,7 @@ def main():
         pattern_output_path=args.pattern_output,
         seed=args.seed,
         default_std=args.std,
+        cluster_weight=args.cluster_weight,
         fg_weight=args.fg_weight,
         jitter=args.jitter,
         min_error=None if args.no_clip else args.min_error,

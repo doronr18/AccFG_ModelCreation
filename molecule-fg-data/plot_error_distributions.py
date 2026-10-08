@@ -2,18 +2,21 @@
 
 Reads error_distributions.py's molecule_model_error_table.csv and writes to --out-dir:
 
-  error_points.png              one panel per model, all on the same axes: x = molecules
-                                ordered by FG cluster then pattern (the same order in every
-                                panel), y = sampled error, one dot per molecule
-  error_points_<model>.png      the same panel alone, on the same axes
-  error_histograms.png          one histogram per model, same bins and axes, stacked by cluster
+  error_points.png              one row per model, in-domain and out-of-domain side by side,
+                                every panel on the same y axis (the sampled error itself):
+                                x = that panel's molecules ordered by FG cluster then pattern,
+                                one dot per molecule
+  error_points_<model>.png      one model's two panels alone, on the same axes
+  error_cluster_boxes.png       per model and domain, one box per cluster (5-95% whiskers),
+                                to show whether the FG bunches sit in different ranges
+  error_histograms.png          per model and domain, same bins, stacked by cluster
   error_plot_summary.csv        the numbers behind the figures: n, mean, std, min, max per
                                 model, cluster and domain
 
 A molecule's group is its pattern's primary cluster (pattern_clusters.csv). The largest
 --top-groups clusters (by molecule count) get their own colour; the rest are grey "Other".
 Clusters sit side by side along x, so each colour is also its own x band, labelled under
-the axis. Dashed lines mark each model's in-domain and out-of-domain mean.
+the axis. A dashed line marks the domain's mean (error_mean in the table).
 
     python3 molecule-fg-data/plot_error_distributions.py
     python3 molecule-fg-data/plot_error_distributions.py --max-points 500000
@@ -70,10 +73,24 @@ def load_errors(errors_path: str | Path, chunksize: int):
     if not parts:
         raise ValueError(f'{errors_path} has no rows')
     models = {name: {k: np.concatenate(v) for k, v in p.items()} for name, p in parts.items()}
-    sizes = {name: len(m['error']) for name, m in models.items()}
-    if len(set(sizes.values())) != 1:
-        print(f'WARNING: models have different molecule counts {sizes}; x positions will not line up')
     return models, means
+
+
+def check_table(models, means):
+    """Print what in the table would make the figures misleading."""
+    for name, data in models.items():
+        n_in = int(data['in_domain'].sum())
+        print(f'{name}: {n_in:,} in-domain, {len(data["in_domain"]) - n_in:,} out-of-domain molecules')
+        if n_in == len(data['in_domain']):
+            print(f'WARNING: {name} has no out-of-domain molecules: its clusters cover every pattern '
+                  '(check the targets in model_specs.csv and pattern_cluster_model_map.csv)')
+        mean_in, mean_out = means.get((name, 'in')), means.get((name, 'out'))
+        if mean_in is not None and mean_out is not None and mean_out <= mean_in:
+            print(f'WARNING: {name}: out-of-domain mean {mean_out:g} is not above in-domain mean {mean_in:g}')
+    if means and all(v == 0 for v in means.values()):
+        print('WARNING: error_mean is 0 in every row. The table was made without avg_error_in (the original '
+              'error_distributions.py defaulted it to 0); re-run the current script with model_specs.csv '
+              'holding avg_error_in for every model')
 
 
 def load_groups(pattern_clusters_path: str | Path, cluster_summary_path: str | Path | None):
@@ -107,19 +124,24 @@ def assign_groups(pattern_index: np.ndarray, cluster_of_pattern: pd.Series, top_
     return cluster, top
 
 
-def x_positions(pattern_index: np.ndarray, cluster: np.ndarray, top: list[int]):
-    """Molecule x positions: coloured clusters (largest first), then Other; within, by pattern.
-
-    Returns (x, rank) with rank = colour slot, len(top) for Other. Every model holds the same
-    molecules, so each pattern gets the same x range in every panel.
-    """
-    rank = np.full(len(cluster), len(top), dtype=np.int64)
-    for slot, cid in enumerate(top):
-        rank[cluster == cid] = slot
+def panel_layout(pattern_index: np.ndarray, rank: np.ndarray, cluster: np.ndarray, top: list[int]):
+    """x in [0, 1] for one panel's molecules: coloured clusters (largest first), then Other;
+    within a cluster, by pattern. Returns (x, (band centres, band names, band edges))."""
+    n = len(rank)
     order = np.lexsort((pattern_index, cluster, rank))
-    x = np.empty(len(order), dtype=np.int64)
-    x[order] = np.arange(len(order))
-    return x, rank
+    x = np.empty(n)
+    x[order] = (np.arange(n) + 0.5) / max(n, 1)
+    centers, names, edges = [], [], []
+    sorted_rank = rank[order]
+    for slot in range(len(top) + 1):
+        lo, hi = np.searchsorted(sorted_rank, slot, 'left'), np.searchsorted(sorted_rank, slot, 'right')
+        if hi == lo:
+            continue
+        centers.append((lo + hi) / 2.0 / n)
+        names.append(f'C{top[slot]}' if slot < len(top) else 'Other')
+        if lo:
+            edges.append(lo / n)
+    return x, (centers, names, edges)
 
 
 def _slug(name: str) -> str:
@@ -137,13 +159,8 @@ def _style_axes(ax):
     ax.set_axisbelow(True)
 
 
-def _mean_lines(ax, model_name, means, vertical=False):
-    for domain, label in (('in', 'in-domain mean'), ('out', 'out-of-domain mean')):
-        value = means.get((model_name, domain))
-        if value is None:
-            continue
-        style = dict(color=INK_SECONDARY, linewidth=0.9, linestyle='--' if domain == 'in' else ':')
-        (ax.axvline if vertical else ax.axhline)(value, **style)
+def _empty(ax, text):
+    ax.text(0.5, 0.5, text, transform=ax.transAxes, ha='center', va='center', fontsize=9, color=INK_MUTED)
 
 
 def _legend_handles(top, labels, group_counts, n_other):
@@ -155,30 +172,77 @@ def _legend_handles(top, labels, group_counts, n_other):
     if n_other:
         handles.append(Line2D([], [], linestyle='', marker='o', markersize=7, markerfacecolor=OTHER_COLOR,
                               markeredgecolor=SURFACE, label=f'Other clusters  (n={n_other:,})'))
-    handles.append(Line2D([], [], color=INK_SECONDARY, linewidth=0.9, linestyle='--', label='in-domain mean'))
-    handles.append(Line2D([], [], color=INK_SECONDARY, linewidth=0.9, linestyle=':', label='out-of-domain mean'))
+    handles.append(Line2D([], [], color=INK_SECONDARY, linewidth=0.9, linestyle='--', label='domain mean'))
     return handles
 
 
-def plot_points(ax, model_name, data, means, top, band_ticks, xlim, ylim, point_size):
+DOMAINS = (('in', True, 'in-domain'), ('out', False, 'out-of-domain'))
+
+
+def plot_points(ax, model_name, data, domain, means, top, ylim, point_size):
+    """One model's molecules in one domain: x = cluster bands, y = sampled error."""
     _style_axes(ax)
+    key, flag, label = domain
+    mask = data['in_domain'] == flag
+    ax.set_title(f'{model_name}  ·  {label}  ({int(mask.sum()):,})', loc='left', fontsize=10, color=INK)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(*ylim)
+    if not mask.any():
+        _empty(ax, f'no {label} molecules for this model')
+        ax.set_xticks([])
+        return
+    rank, error = data['rank'][mask], data['error'][mask]
+    x, (centers, names, edges) = panel_layout(data['pattern_index'][mask], rank, data['cluster'][mask], top)
     colors = np.array(GROUP_COLORS[:len(top)] + [OTHER_COLOR])
     # Other first so the coloured clusters draw on top where bands touch.
-    draw = np.argsort(data['rank'] != len(top), kind='stable')
-    ax.scatter(data['x'][draw], data['error'][draw], c=colors[data['rank'][draw]], s=point_size,
-               linewidths=0, rasterized=True)
-    _mean_lines(ax, model_name, means)
-    n_in = int(data['in_domain'].sum())
-    ax.set_title(f'{model_name}   in-domain {n_in:,} · out-of-domain {len(data["error"]) - n_in:,}',
-                 loc='left', fontsize=10, color=INK)
-    ax.set_xlim(*xlim)
-    ax.set_ylim(*ylim)
-    ax.set_ylabel('sampled error', fontsize=9, color=INK_SECONDARY)
-    centers, names, edges = band_ticks
+    draw = np.argsort(rank != len(top), kind='stable')
+    ax.scatter(x[draw], error[draw], c=colors[rank[draw]], s=point_size, linewidths=0, rasterized=True)
+    if (model_name, key) in means:
+        ax.axhline(means[(model_name, key)], color=INK_SECONDARY, linewidth=0.9, linestyle='--')
     ax.set_xticks(centers)
     ax.set_xticklabels(names, fontsize=8)
     for edge in edges:
         ax.axvline(edge, color=GRID, linewidth=0.6)
+
+
+def plot_boxes(ax, model_name, data, domain, means, top, ylim):
+    """One box per cluster: where each FG bunch sits in this model's distribution."""
+    _style_axes(ax)
+    key, flag, label = domain
+    mask = data['in_domain'] == flag
+    ax.set_title(f'{model_name}  ·  {label}', loc='left', fontsize=10, color=INK)
+    ax.set_ylim(*ylim)
+    slots = [s for s in range(len(top) + 1) if (mask & (data['rank'] == s)).any()]
+    if not slots:
+        _empty(ax, f'no {label} molecules for this model')
+        ax.set_xticks([])
+        return
+    boxes = ax.boxplot([data['error'][mask & (data['rank'] == s)] for s in slots], positions=range(len(slots)),
+                       whis=(5, 95), showfliers=False, widths=0.6, patch_artist=True,
+                       medianprops=dict(color=INK, linewidth=1.0),
+                       whiskerprops=dict(color=INK_SECONDARY), capprops=dict(color=INK_SECONDARY))
+    for patch, slot in zip(boxes['boxes'], slots):
+        patch.set_facecolor(GROUP_COLORS[slot] if slot < len(top) else OTHER_COLOR)
+        patch.set_edgecolor(SURFACE)
+    if (model_name, key) in means:
+        ax.axhline(means[(model_name, key)], color=INK_SECONDARY, linewidth=0.9, linestyle='--')
+    ax.set_xticks(range(len(slots)))
+    ax.set_xticklabels([f'C{top[s]}' if s < len(top) else 'Other' for s in slots], fontsize=8)
+
+
+def _grid(n_models, height):
+    return plt.subplots(n_models, 2, figsize=(14, height * n_models + 0.8), sharey=True, squeeze=False,
+                        facecolor=SURFACE)
+
+
+def _finish(fig, handles, title, path, dpi):
+    fig.legend(handles=handles, loc='center left', bbox_to_anchor=(1.0, 0.5), frameon=False, fontsize=8,
+               labelcolor=INK_SECONDARY)
+    if title:
+        fig.suptitle(title, x=0.01, ha='left', fontsize=12, color=INK)
+    fig.tight_layout()
+    fig.savefig(path, dpi=dpi, bbox_inches='tight', facecolor=SURFACE)
+    plt.close(fig)
 
 
 def build_figures(
@@ -200,13 +264,16 @@ def build_figures(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     models, means = load_errors(errors_path, chunksize)
+    check_table(models, means)
     cluster_of_pattern, labels = load_groups(pattern_clusters_path, cluster_summary_path)
     reference = next(iter(models.values()))
     _, top = assign_groups(reference['pattern_index'], cluster_of_pattern, top_groups)
 
     for data in models.values():
         data['cluster'], _ = assign_groups(data['pattern_index'], cluster_of_pattern, top_groups)
-        data['x'], data['rank'] = x_positions(data['pattern_index'], data['cluster'], top)
+        data['rank'] = np.full(len(data['cluster']), len(top), dtype=np.int64)
+        for slot, cid in enumerate(top):
+            data['rank'][data['cluster'] == cid] = slot
 
     summary_rows = []
     for model_name, data in models.items():
@@ -232,77 +299,66 @@ def build_figures(
         else:
             shown[model_name] = data
 
+    # One y range for every panel, from the errors themselves, so values read off directly.
     all_errors = np.concatenate([d['error'] for d in models.values()])
     lo, hi = float(all_errors.min()), float(all_errors.max())
     pad = 0.04 * (hi - lo or 1.0)
     ylim = (lo - pad, hi + pad)
-    n_molecules = max(len(d['error']) for d in models.values())
-    xlim = (-0.005 * n_molecules, 1.005 * n_molecules)
 
-    ref_rank, ref_x = models[next(iter(models))]['rank'], models[next(iter(models))]['x']
-    centers, names, edges = [], [], []
-    group_counts = []
-    for slot in range(len(top) + 1):
-        xs = ref_x[ref_rank == slot]
-        if slot < len(top):
-            group_counts.append(len(xs))
-        if xs.size == 0:
-            continue
-        centers.append((xs.min() + xs.max()) / 2.0)
-        names.append(f'C{top[slot]}' if slot < len(top) else 'Other')
-        if slot:
-            edges.append(xs.min() - 0.5)
-    n_other = int((ref_rank == len(top)).sum())
-    band_ticks = (centers, names, edges)
+    group_counts = [int((reference['rank'] == slot).sum()) for slot in range(len(top))]
+    n_other = int((reference['rank'] == len(top)).sum())
     handles = _legend_handles(top, labels, group_counts, n_other)
     point_size = 1.5 if max(len(d['error']) for d in shown.values()) > 200_000 else 4.0
-
     n_models = len(models)
-    fig, axes = plt.subplots(n_models, 1, figsize=(12, 2.4 * n_models + 0.8), sharex=True, sharey=True,
-                             squeeze=False, facecolor=SURFACE)
-    for ax, (model_name, data) in zip(axes[:, 0], shown.items()):
-        plot_points(ax, model_name, data, means, top, band_ticks, xlim, ylim, point_size)
-    axes[-1, 0].set_xlabel('molecules, grouped by FG cluster (same order in every panel)', fontsize=9,
-                           color=INK_SECONDARY)
-    fig.legend(handles=handles, loc='center left', bbox_to_anchor=(1.0, 0.5), frameon=False, fontsize=8,
-               labelcolor=INK_SECONDARY)
-    fig.suptitle('Sampled error per molecule, all models on the same axes', x=0.01, ha='left', fontsize=12,
-                 color=INK)
-    fig.tight_layout()
-    fig.savefig(out_dir / 'error_points.png', dpi=dpi, bbox_inches='tight', facecolor=SURFACE)
-    plt.close(fig)
+    xlabel = 'molecules in this panel, grouped by FG cluster'
+
+    fig, axes = _grid(n_models, 2.4)
+    for row, (model_name, data) in zip(axes, shown.items()):
+        for ax, domain in zip(row, DOMAINS):
+            plot_points(ax, model_name, data, domain, means, top, ylim, point_size)
+        row[0].set_ylabel('sampled error', fontsize=9, color=INK_SECONDARY)
+    for ax in axes[-1]:
+        ax.set_xlabel(xlabel, fontsize=9, color=INK_SECONDARY)
+    _finish(fig, handles, 'Sampled error per molecule: in-domain | out-of-domain, all panels on the same y axis',
+            out_dir / 'error_points.png', dpi)
 
     for model_name, data in shown.items():
-        fig, ax = plt.subplots(figsize=(12, 3.4), facecolor=SURFACE)
-        plot_points(ax, model_name, data, means, top, band_ticks, xlim, ylim, point_size)
-        ax.set_xlabel('molecules, grouped by FG cluster (same order in every model figure)', fontsize=9,
-                      color=INK_SECONDARY)
-        fig.legend(handles=handles, loc='center left', bbox_to_anchor=(1.0, 0.5), frameon=False, fontsize=8,
-                   labelcolor=INK_SECONDARY)
-        fig.tight_layout()
-        fig.savefig(out_dir / f'error_points_{_slug(model_name)}.png', dpi=dpi, bbox_inches='tight',
-                    facecolor=SURFACE)
-        plt.close(fig)
+        fig, row = plt.subplots(1, 2, figsize=(14, 3.4), sharey=True, facecolor=SURFACE)
+        for ax, domain in zip(row, DOMAINS):
+            plot_points(ax, model_name, data, domain, means, top, ylim, point_size)
+            ax.set_xlabel(xlabel, fontsize=9, color=INK_SECONDARY)
+        row[0].set_ylabel('sampled error', fontsize=9, color=INK_SECONDARY)
+        _finish(fig, handles, None, out_dir / f'error_points_{_slug(model_name)}.png', dpi)
+
+    fig, axes = _grid(n_models, 2.2)
+    for row, (model_name, data) in zip(axes, models.items()):
+        for ax, domain in zip(row, DOMAINS):
+            plot_boxes(ax, model_name, data, domain, means, top, ylim)
+        row[0].set_ylabel('sampled error', fontsize=9, color=INK_SECONDARY)
+    _finish(fig, handles, 'Error range of each FG cluster (box 25-75%, whiskers 5-95%), same y axis',
+            out_dir / 'error_cluster_boxes.png', dpi)
 
     edges_hist = np.linspace(ylim[0], ylim[1], bins + 1)
     colors = GROUP_COLORS[:len(top)] + [OTHER_COLOR]
-    fig, axes = plt.subplots(n_models, 1, figsize=(10, 2.2 * n_models + 0.8), sharex=True, sharey=True,
-                             squeeze=False, facecolor=SURFACE)
-    for ax, (model_name, data) in zip(axes[:, 0], models.items()):
-        _style_axes(ax)
-        stacks = [data['error'][data['rank'] == slot] for slot in range(len(top) + 1)]
-        ax.hist(stacks, bins=edges_hist, stacked=True, color=colors, edgecolor=SURFACE, linewidth=0.3)
-        _mean_lines(ax, model_name, means, vertical=True)
-        ax.set_title(model_name, loc='left', fontsize=10, color=INK)
-        ax.set_ylabel('molecules', fontsize=9, color=INK_SECONDARY)
-    axes[-1, 0].set_xlabel('sampled error', fontsize=9, color=INK_SECONDARY)
-    fig.legend(handles=handles, loc='center left', bbox_to_anchor=(1.0, 0.5), frameon=False, fontsize=8,
-               labelcolor=INK_SECONDARY)
-    fig.suptitle('Error distribution per model, same bins and axes, stacked by FG cluster', x=0.01, ha='left',
-                 fontsize=12, color=INK)
-    fig.tight_layout()
-    fig.savefig(out_dir / 'error_histograms.png', dpi=dpi, bbox_inches='tight', facecolor=SURFACE)
-    plt.close(fig)
+    fig, axes = plt.subplots(n_models, 2, figsize=(14, 2.2 * n_models + 0.8), sharex=True, squeeze=False,
+                             facecolor=SURFACE)
+    for row, (model_name, data) in zip(axes, models.items()):
+        for ax, (key, flag, label) in zip(row, DOMAINS):
+            _style_axes(ax)
+            mask = data['in_domain'] == flag
+            ax.set_title(f'{model_name}  ·  {label}', loc='left', fontsize=10, color=INK)
+            if not mask.any():
+                _empty(ax, f'no {label} molecules for this model')
+                continue
+            stacks = [data['error'][mask & (data['rank'] == slot)] for slot in range(len(top) + 1)]
+            ax.hist(stacks, bins=edges_hist, stacked=True, color=colors, edgecolor=SURFACE, linewidth=0.3)
+            if (model_name, key) in means:
+                ax.axvline(means[(model_name, key)], color=INK_SECONDARY, linewidth=0.9, linestyle='--')
+        row[0].set_ylabel('molecules', fontsize=9, color=INK_SECONDARY)
+    for ax in axes[-1]:
+        ax.set_xlabel('sampled error', fontsize=9, color=INK_SECONDARY)
+    _finish(fig, handles, 'Error distribution per model and domain, same bins, stacked by FG cluster',
+            out_dir / 'error_histograms.png', dpi)
     return summary
 
 

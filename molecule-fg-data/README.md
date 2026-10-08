@@ -223,8 +223,9 @@ What it does:
 
 - gives every model two normal error distributions: in-domain, centred on `avg_error_in` with std `std_error_in`, and out-of-domain, centred 3 std higher (`avg_error_in + 3 * std_error_in`)
 - a molecule is in-domain for a model when its pattern is in one of the model's clusters (`pattern_cluster_model_map.csv`)
-- in-domain: molecules with the same FGs land in the same range of the distribution, and molecules with similar FGs land close together (`--fg-weight`, default 0.8, sets how strongly)
-- out-of-domain: patterns are ranked by their minimum Hamming distance to the model's in-domain patterns; the closest take the low end of the out-of-domain distribution
+- each FG cluster (a pattern's primary cluster) gets its own part of each model's distribution (`--cluster-weight`, default 0.6), molecules with similar FGs land close together (`--fg-weight`, default 0.3), and the rest is per-pattern noise, so molecules with the same FGs land in the same range but not on the same value
+- in-domain: patterns are ranked by that score
+- out-of-domain: patterns are ranked by their minimum Hamming distance to the model's in-domain patterns; the closest take the low end of the out-of-domain distribution (the score breaks ties, so clusters still separate at each distance)
 - each molecule adds a small jitter of its own (`--jitter`, default 0.2 std); errors below 0 are clipped (`--no-clip` keeps them)
 - prints the target vs sampled mean and std for every model and domain
 
@@ -245,12 +246,15 @@ Outputs:
 
 `plot_error_distributions.py` reads `molecule_model_error_table.csv` and writes to `csv_outputs/figures/`:
 
-- `error_points.png` — one panel per model, all on the same axes: x = molecules grouped by FG cluster then pattern (the same order in every panel), y = sampled error, one dot per molecule
-- `error_points_<model>.png` — each panel on its own, on the same axes
-- `error_histograms.png` — one histogram per model, same bins and axes, stacked by cluster
+- `error_points.png` — one row per model with in-domain and out-of-domain side by side, every panel on the same y axis (the sampled error itself, not centred): x = that panel's molecules grouped by FG cluster then pattern, one dot per molecule
+- `error_points_<model>.png` — one model's two panels on their own, on the same axes
+- `error_cluster_boxes.png` — per model and domain, one box per cluster (25–75%, whiskers 5–95%), to see whether the FG bunches sit in different ranges
+- `error_histograms.png` — per model and domain, same bins, stacked by cluster
 - `error_plot_summary.csv` — n, mean, std, min, max of the error per model, cluster and domain
 
-A molecule's colour is its pattern's primary cluster (`pattern_clusters.csv`); the `--top-groups` largest clusters (default 7, the most colours that stay distinguishable) get their own colour and the rest are grey "Other". The legend names each cluster's common FGs from `cluster_summary.csv`. Dashed and dotted lines mark the in-domain and out-of-domain means. `--max-points N` plots N molecules per model (the same ones in every panel) when every point is too slow; the histograms and the summary always use all of them.
+A molecule's colour is its pattern's primary cluster (`pattern_clusters.csv`); the `--top-groups` largest clusters (default 7, the most colours that stay distinguishable) get their own colour and the rest are grey "Other". The legend names each cluster's common FGs from `cluster_summary.csv`. A dashed line marks each domain's mean. A panel says so when a model has no molecules in that domain. `--max-points N` plots N molecules per model (the same ones in every panel) when every point is too slow; the boxes, histograms and summary always use all of them.
+
+The script first prints each model's in-domain and out-of-domain counts, and warns when a model has no out-of-domain molecules or when `error_mean` is 0 everywhere (a table made without `avg_error_in`, as the original `error_distributions.py` did).
 
 ```bash
 python3 "molecule-fg-data/plot_error_distributions.py"
