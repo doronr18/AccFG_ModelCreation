@@ -237,12 +237,16 @@ The `split` column (`train` / `test`, empty for rejected molecules) is a held-ou
 - `--split-by pattern` (default): hold out whole FG patterns, i.e. unseen FG combinations from clusters the agent has seen
 - `--split-by cluster`: hold out whole primary clusters, a harder test with new kinds of molecules; large clusters can push `test` well above the fraction (a warning says so)
 - `--split-seed` (default `0`): which groups are held out. The same inputs and seed always give the same split
+- both splits are always written as well, as `split_pattern` and `split_cluster`; `split` is a copy of the one chosen with `--split-by`. So one pipeline run can train and evaluate the agent on either split
 
 `pipeline.lsf` sets these with `HOLDOUT_FRACTION`, `SPLIT_BY` and `SEED`. To make the files the routing agent reads:
 
 ```bash
 python3 -c "import pandas as pd; d=pd.read_csv('csv_outputs/molecule_lineage.csv'); d=d[d.status=='clustered']
 for s in ('train','test'): d[d.split==s][['cid','pattern_index']].to_csv(f'molecule_patterns_{s}.csv', index=False)"
+# the cluster split as well (whole FG clusters held out):
+python3 -c "import pandas as pd; d=pd.read_csv('csv_outputs/molecule_lineage.csv'); d=d[d.status=='clustered']
+for s in ('train','test'): d[d.split_cluster==s][['cid','pattern_index']].to_csv(f'molecule_patterns_cluster_{s}.csv', index=False)"
 ```
 
 ## Stage 6: sample a ground-truth error per molecule per model
@@ -322,7 +326,7 @@ Stage 5 stops with a clear error, naming the models, when `target_coverage` is b
 
 `model_specs_generic.csv` in this folder is a 10-model template: Lookup plus nine real model types (QSAR, graph and 3D networks, chemical language models and LLMs), with two costs from each model's parameter count: `compute_cost_total` (all parameters) and `compute_cost_active` (parameters used per input, which differ only for mixture-of-experts models); `compute_cost` is the active one. `target_coverage` is left blank to be filled in; `avg_error_in` / `avg_error_out` are draft values. Copy it to `csv_outputs/model_specs.csv` before running the pipeline. Parameter counts and their sources are in `model_specs_generic_sources.csv`.
 
-Nothing in stages 5–6 depends on the number of models, but more models make the cluster assignment harder: every model needs `MIN_EXCLUSIVE` of the molecules that only it covers, and clusters are assigned whole. `pipeline.lsf` sets `MIN_EXCLUSIVE=0.09` (9%) for the 10-model setup, so 90% of the molecules each belong to exactly one model and the remaining 10% can be shared. Every model's `target_coverage` must then be at least 0.09 (or that model needs its own, smaller `min_exclusive` column value), and the sum of the exclusive shares must stay at or below 100%. With 10 models the first value in `MAX_COMPONENTS_TRY` (12 clusters) may be too coarse, in which case `pipeline.lsf` moves on to 16, 24, ... clusters; it prints which cluster count it kept.
+Nothing in stages 5–6 depends on the number of models, but more models make the cluster assignment harder: every model needs `MIN_EXCLUSIVE` of the molecules that only it covers, and clusters are assigned whole. `pipeline.lsf` sets `MIN_EXCLUSIVE=0.09` (9%) for the 10-model setup, so 90% of the molecules each belong to exactly one model and the remaining 10% can be shared. Every model's `target_coverage` must then be at least 0.09, or the model needs its own, smaller `min_exclusive`: the template gives Lookup `target_coverage` 0.05 and `min_exclusive` 0.05 (blank `min_exclusive` = `MIN_EXCLUSIVE`), and the sum of the exclusive shares must stay at or below 100%. With 10 models the first value in `MAX_COMPONENTS_TRY` (12 clusters) may be too coarse, in which case `pipeline.lsf` moves on to 16, 24, ... clusters; it prints which cluster count it kept.
 
 Important modeling note:
 
