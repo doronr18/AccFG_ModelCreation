@@ -2,8 +2,14 @@
 
 Every model has an in-domain and an out-of-domain normal distribution:
 
-- in-domain:     mean = avg_error_in,                    std = std_error_in
-- out-of-domain: mean = avg_error_in + 3 * std_error_in, std = std_error_out (defaults to std_error_in)
+- in-domain:     mean = avg_error_in,  std = std_error_in
+- out-of-domain: mean = avg_error_out, std = std_error_out (defaults to std_error_in)
+
+avg_error_out is optional: when its cell (or the column) is empty, it defaults to
+avg_error_in + 3 * std_error_in. An avg_error_in of "none" (or empty) means the model is exact
+on its in-domain molecules, i.e. 0, as for a lookup; such a model must give avg_error_out,
+because a lookup can't predict molecules outside its table and the default would put its
+out-of-domain errors just above 0.
 
 Each molecule gets one sampled error per model. Where in the distribution it lands is
 decided per FG pattern, so molecules with the same FGs come from the same range:
@@ -68,23 +74,59 @@ def _rank_positions(order: np.ndarray, counts: np.ndarray, n_patterns: int):
     return u, z
 
 
+def _numeric_column(specs: pd.DataFrame, column: str, none_value=np.nan) -> pd.Series:
+    """The column as floats. Empty cells become NaN and "none" becomes none_value; any other
+    text is an error that names the model and the value."""
+    raw = specs[column]
+    text = raw.astype(str).str.strip()
+    empty = raw.isna() | text.eq('') | text.str.lower().isin(['nan'])
+    none = text.str.lower().eq('none')
+    values = pd.to_numeric(raw.where(~(empty | none)), errors='coerce')
+    bad = values.isna() & ~(empty | none)
+    if bad.any():
+        examples = ', '.join(f'{m}: {v!r}' for m, v in zip(specs.loc[bad, 'model_name'], raw[bad]))
+        raise ValueError(f'model_specs.csv: {column} must be a number or "none" ({examples})')
+    return values.mask(none, none_value)
+
+
 def load_model_specs(model_specs_path: str | Path, default_std: float) -> pd.DataFrame:
-    specs = pd.read_csv(model_specs_path)
+    specs = pd.read_csv(model_specs_path, dtype=str, keep_default_na=False)
     if not {'model_name', 'avg_error_in'}.issubset(specs.columns):
         raise ValueError('model_specs.csv must include model_name and avg_error_in columns')
-    if specs['model_name'].duplicated().any():
-        raise ValueError('model_specs.csv has duplicate model_name rows')
     specs = specs.copy()
     specs['model_name'] = specs['model_name'].astype(str).str.strip()
+    if specs['model_name'].duplicated().any():
+        raise ValueError('model_specs.csv has duplicate model_name rows')
+
+    # "none" (or empty) avg_error_in: exact in-domain, as for a lookup
+    exact_in_domain = _numeric_column(specs, 'avg_error_in').isna()
+    specs['avg_error_in'] = _numeric_column(specs, 'avg_error_in').fillna(0.0)
+    for column in ('std_error_in', 'std_error_out', 'avg_error_out'):
+        if column in specs.columns:
+            specs[column] = _numeric_column(specs, column)
     if 'std_error_in' not in specs.columns:
         specs['std_error_in'] = default_std
     specs['std_error_in'] = specs['std_error_in'].fillna(default_std)
     if 'std_error_out' not in specs.columns:
         specs['std_error_out'] = specs['std_error_in']
     specs['std_error_out'] = specs['std_error_out'].fillna(specs['std_error_in'])
-    if specs['avg_error_in'].isna().any() or (specs[['std_error_in', 'std_error_out']] <= 0).any().any():
-        raise ValueError('model_specs.csv needs an avg_error_in for every model and positive std values')
-    specs['avg_error_out'] = specs['avg_error_in'] + OUT_OF_DOMAIN_SHIFT_STDS * specs['std_error_in']
+    if (specs[['std_error_in', 'std_error_out']] <= 0).any().any():
+        raise ValueError('model_specs.csv needs positive std values')
+
+    if 'avg_error_out' not in specs.columns:
+        specs['avg_error_out'] = np.nan
+    missing_out = exact_in_domain & specs['avg_error_out'].isna()
+    if missing_out.any():
+        raise ValueError(
+            f'model_specs.csv: {specs.loc[missing_out, "model_name"].tolist()} have avg_error_in "none" '
+            '(exact in-domain) but no avg_error_out. Give their out-of-domain mean in an avg_error_out '
+            'column, e.g. 1.0; the default (0 + 3 * std_error_in) would make them look nearly exact '
+            'on molecules outside their domain.')
+    specs['avg_error_out'] = specs['avg_error_out'].fillna(
+        specs['avg_error_in'] + OUT_OF_DOMAIN_SHIFT_STDS * specs['std_error_in'])
+    for spec in specs.itertuples(index=False):
+        print(f'{spec.model_name}: in-domain mean {spec.avg_error_in:g} (std {spec.std_error_in:g}), '
+              f'out-of-domain mean {spec.avg_error_out:g} (std {spec.std_error_out:g})')
     return specs
 
 

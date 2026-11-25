@@ -22,6 +22,7 @@ This is the location that the scripts are written to read from by default.
 - `build_pattern_clusters.py` — clusters binary FG patterns
 - `label_clusters.py` — decodes cluster patterns into functional-group labels
 - `assign_clusters_to_models.py` — assigns cluster coverage to model buckets
+- `molecule_lineage.py` — after stage 5: one row per molecule with its cid, SMILES, FGs, cluster(s) and model(s)
 - `error_distributions.py` — samples one ground-truth error per molecule per model
 - `plot_error_distributions.py` — plots every sampled error per model, coloured by FG cluster
 - `patterns.py` — shared utilities for pattern generation/counting
@@ -213,6 +214,41 @@ If no assignment can give every model its exclusive share, stage 5 writes `assig
 
 If any model ends more than `--tolerance` (default `0.02`, i.e. ±2 percentage points) from its target, the clusters are too coarse for the targets. All outputs are still written, but the script then prints a message naming each model that misses and the cluster sizes, saying to re-run `build_pattern_clusters.py` with a larger `--max-components`, saves it to `csv_outputs/assignment_warnings.txt`, and exits with status **3**. `within_tolerance` in the report shows which models pass.
 
+### One row per molecule: `molecule_lineage.py`
+
+Run after stage 5 to look up any molecule in one place. It joins stages 1–5 by `cid` into
+`csv_outputs/molecule_lineage.csv`, one row per input molecule:
+
+`cid`, `smiles`, `status` (`clustered` or the reason it was rejected), `pattern_index`, `n_fgs`,
+`fgs` (`;`-separated FG names), `primary_cluster`, `clusters` (every cluster it belongs to,
+primary first) and `models` (every model given any of those clusters). Rejected molecules keep
+their cid, SMILES and status, with the other columns empty.
+
+```bash
+python3 "molecule-fg-data/molecule_lineage.py" --fg-dir /data/fg --parquet   # fg_matrix.py output
+python3 "molecule-fg-data/molecule_lineage.py"                               # fg_presence.csv
+```
+
+`pipeline.lsf` runs it as its last step. `--parquet` also writes `molecule_lineage.parquet`.
+
+The `split` column (`train` / `test`, empty for rejected molecules) is a held-out set for evaluating the routing agent: train on the `train` molecules and report results on `test`. It holds out whole groups, never single molecules. Molecules with the same FG pattern have the same FGs, embeddings and error distributions, so splitting them would put copies of the same molecule on both sides.
+
+- `--holdout-fraction` (default `0.2`): share of the clustered molecules in `test`; `0` turns the split off
+- `--split-by pattern` (default): hold out whole FG patterns, i.e. unseen FG combinations from clusters the agent has seen
+- `--split-by cluster`: hold out whole primary clusters, a harder test with new kinds of molecules; large clusters can push `test` well above the fraction (a warning says so)
+- `--split-seed` (default `0`): which groups are held out. The same inputs and seed always give the same split
+- both splits are always written as well, as `split_pattern` and `split_cluster`; `split` is a copy of the one chosen with `--split-by`. So one pipeline run can train and evaluate the agent on either split
+
+`pipeline.lsf` sets these with `HOLDOUT_FRACTION`, `SPLIT_BY` and `SEED`. To make the files the routing agent reads:
+
+```bash
+python3 -c "import pandas as pd; d=pd.read_csv('csv_outputs/molecule_lineage.csv'); d=d[d.status=='clustered']
+for s in ('train','test'): d[d.split==s][['cid','pattern_index']].to_csv(f'molecule_patterns_{s}.csv', index=False)"
+# the cluster split as well (whole FG clusters held out):
+python3 -c "import pandas as pd; d=pd.read_csv('csv_outputs/molecule_lineage.csv'); d=d[d.status=='clustered']
+for s in ('train','test'): d[d.split_cluster==s][['cid','pattern_index']].to_csv(f'molecule_patterns_cluster_{s}.csv', index=False)"
+```
+
 ## Stage 6: sample a ground-truth error per molecule per model
 
 Script:
@@ -221,7 +257,9 @@ Script:
 
 What it does:
 
-- gives every model two normal error distributions: in-domain, centred on `avg_error_in` with std `std_error_in`, and out-of-domain, centred 3 std higher (`avg_error_in + 3 * std_error_in`)
+- gives every model two normal error distributions: in-domain, centred on `avg_error_in` with std `std_error_in`, and out-of-domain, centred on `avg_error_out` with std `std_error_out`. When `avg_error_out` is empty or the column is missing, it is 3 std above the in-domain mean (`avg_error_in + 3 * std_error_in`)
+- `avg_error_in` of `none` (or empty) means exact in-domain, i.e. 0, as for a lookup. Such a model must give `avg_error_out`: a lookup can't predict molecules outside its table, and the default would put its out-of-domain errors at about 0.15
+- prints each model's in-domain and out-of-domain mean and std before sampling
 - a molecule is in-domain for a model when its pattern is in one of the model's clusters (`pattern_cluster_model_map.csv`)
 - each FG cluster (a pattern's primary cluster) gets its own part of each model's distribution (`--cluster-weight`, default 0.6), molecules with similar FGs land close together (`--fg-weight`, default 0.3), and the rest is per-pattern noise, so molecules with the same FGs land in the same range but not on the same value
 - in-domain: patterns are ranked by that score
@@ -235,7 +273,13 @@ Inputs:
 - `csv_outputs/molecule_patterns.csv`
 - `csv_outputs/pattern_clusters.csv`
 - `csv_outputs/pattern_cluster_model_map.csv`
-- `csv_outputs/model_specs.csv` — needs `avg_error_in`; `std_error_in` is optional (`--std`, default 0.05)
+- `csv_outputs/model_specs.csv` — needs `avg_error_in` (a number or `none`); optional: `avg_error_out` (required for `none` models), `std_error_in` (`--std`, default 0.05), `std_error_out` (defaults to `std_error_in`). For example:
+
+  ```
+  model_name,target_coverage,avg_error_in,avg_error_out,compute_cost,time_penalty
+  Lookup,0.05,none,1.0,0.1,0.05
+  Small Statistical,0.35,1,,0.2,0.15
+  ```
 
 Outputs:
 
@@ -271,8 +315,18 @@ The file contains one row per model:
 - `model_name`
 - `target_coverage` — the fraction of clustered molecules the model should cover
 - `min_fgs` / `max_fgs` — optional, and ignored by the assignment
-- `avg_error_in` — the model's average in-domain error (stage 6)
+- `avg_error_in` — the model's average in-domain error, or `none` for exact in-domain (stage 6)
+- `avg_error_out` — optional average out-of-domain error (stage 6; required when `avg_error_in` is `none`)
 - `std_error_in` — optional std of both error distributions (stage 6; default 0.05)
+- any other columns (for example `compute_cost`, `time_penalty`, `n_params`, `n_params_active`, used by the routing agent) are ignored here
+
+Stage 5 stops with a clear error, naming the models, when `target_coverage` is blank, not a number, or outside 0–1 (for example in a template whose coverage has not been filled in yet).
+
+### Ten models: `model_specs_generic.csv`
+
+`model_specs_generic.csv` in this folder is a 10-model template: Lookup plus nine real model types (QSAR, graph and 3D networks, chemical language models and LLMs), with two costs from each model's parameter count: `compute_cost_total` (all parameters) and `compute_cost_active` (parameters used per input, which differ only for mixture-of-experts models); `compute_cost` is the active one. `target_coverage` values are agreed (chosen so coverage does not rank like accuracy or cost); `avg_error_in` / `avg_error_out` are draft values. Copy it to `csv_outputs/model_specs.csv` before running the pipeline. Parameter counts and their sources are in `model_specs_generic_sources.csv`.
+
+Nothing in stages 5–6 depends on the number of models, but more models make the cluster assignment harder: every model needs `MIN_EXCLUSIVE` of the molecules that only it covers, and clusters are assigned whole. `pipeline.lsf` sets `MIN_EXCLUSIVE=0.03` (3%) for the 10-model setup: 30% of the molecules belong to exactly one model and the other 70% can be shared. Every model's `target_coverage` must be at least the exclusive share, and no model can cover more than 1 minus the other models' exclusive shares (about 0.73 with 10 models at 3%); a `min_exclusive` column sets the share per model. With 10 models the first value in `MAX_COMPONENTS_TRY` (12 clusters) may be too coarse, in which case `pipeline.lsf` moves on to 16, 24, ... clusters; it prints which cluster count it kept.
 
 Important modeling note:
 
@@ -337,6 +391,7 @@ This is the most important conceptual link:
 - `cluster_summary.csv` = chemical summary for each cluster
 - `model_assignments.csv` = which cluster covers which model
 - `model_coverage_report.csv` = model coverage summary and gaps
+- `molecule_lineage.csv` = per-molecule join of all of the above: cid → SMILES → FGs → cluster(s) → model(s)
 
 ## Notes for future use
 

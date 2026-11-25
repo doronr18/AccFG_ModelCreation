@@ -1,0 +1,95 @@
+host cccxc568  slots: cccxc568 16   started Thu Nov  5 01:34:54 PM IST 2026
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+  File "/dccstor/amd/brandi/anaconda3/lib/python3.8/site-packages/numpy/__init__.py", line 327, in <module>
+    __mkl_version__ = "{MajorVersion}.{MinorVersion}.{UpdateVersion}".format(**mkl.get_version())
+KeyboardInterrupt
+
+------------------------------------------------------------
+Sender: LSF System <lsfadmin@cccxc568>
+Subject: Job 2286544: <fg_pipeline> in cluster <CCCFP15Cluster> Exited
+
+Job <fg_pipeline> was submitted from host <ccc-login3> by user <brandiransom> in cluster <CCCFP15Cluster> at Thu Nov  5 06:31:57 2026
+Job was executed on host(s) <16*cccxc568>, in queue <normal>, as user <brandiransom> in cluster <CCCFP15Cluster> at Thu Nov  5 06:34:52 2026
+</u/brandiransom> was used as the home directory.
+</dccstor/amd/brandi/AccFG_ModelCreation> was used as the working directory.
+Started at Thu Nov  5 06:34:52 2026
+Terminated at Thu Nov  5 06:35:03 2026
+Results reported at Thu Nov  5 06:35:03 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+# The whole pipeline as ONE LSF job, stage after stage:
+#   1a  stage1/extract_smiles.py          sample TARGET molecules (no salts) from the JSONL files
+#   1b  stage1/fg_matrix.py               AccFG functional-group matrix, cid kept
+#   2   build_pattern_count_dictionary.py unique FG patterns, cid -> pattern, molecule status
+#   3   build_pattern_clusters.py         Bernoulli-mixture clusters
+#   4   label_clusters.py                 cluster FG labels
+#   5   assign_clusters_to_models.py      whole clusters -> models, coverage report
+#   6   molecule_lineage.py               per-cid table: SMILES, FGs, cluster(s), model(s)
+#
+# Submit with:   bsub < molecule-fg-data/pipeline.lsf
+# (the "<" is required: `bsub pipeline.lsf` runs the file as a plain command and ignores
+#  every #BSUB line below -- no core count, memory or time limit).
+#
+# Outputs: stage 1 writes to $WORK/smiles and $WORK/fg; stages 2-5 write to
+# molecule-fg-data/csv_outputs/ (outputs of an earlier run are first moved to
+# csv_outputs/previous_<date>/; model_specs.csv stays).
+#
+# Cluster count: stages 3-5 are tried with each value in MAX_COMPONENTS_TRY in turn, and
+# the first one whose model assignment meets every rule is kept (stage 5 exits 0). Stage 5
+# exits with 3 when the clusters are too coarse -- a model would miss its coverage target by
+# more than TOLERANCE, or not every model can get MIN_EXCLUSIVE molecules of its own -- and
+# the next, larger value is tried. If none works, the job exits with 3 and
+# csv_outputs/assignment_warnings.txt says why; add larger values (or lower PRUNE_THRESHOLD
+# or MIN_EXCLUSIVE) and resubmit: stage 1 resumes from its finished outputs.
+#
+# Exit status: 0, 3 as above, or that of the first stage that fails.
+#
+# Sizing (estimates; check your first run's log): stage 1b dominates, at ~100 mol/s per
+# slot on Python 3.9 / AccFG 0.0.7 or ~200 on Python 3.10+ / AccFG 0.1.0, so 500k molecules
+# take about 5-10 minutes on 16 slots. Each stage-1b worker peaks at ~210 MB.
+
+#BSUB -J fg_pipeline
+#BSUB -n 16
+#BSUB -R "span[hosts=1]"
+#BSUB -R "rusage[mem=500]"
+#BSUB -W 6:00
+#BSUB -o fg_pipeline.%J.log
+##BSUB -q your_queue_name           # uncomment and set if your site requires a queue
+#
+# span[hosts=1]: the stage-1 scripts use worker processes, which cannot cross nodes.
+# rusage[mem=500]: per slot or per job, MB or GB, is a site setting (see stage1/fg.lsf).
+
+set -euo pipefail
+
+# ---- edit these ---------------------------------------------------------------------
+PIPELINE=$HOME/molecule-fg-data          # this folder, as uploaded to the cluster
+JSONL_DIR=/dccstor/amd/datasets/pubchem
+WORK=/dccstor/amd/brandi/scratch               # the processed_Compound_*.jsonl files
+GLOB='processed_Compound_*.jsonl'
+
+(... more ...)
+------------------------------------------------------------
+
+TERM_OWNER: job killed by owner.
+Exited with exit code 130.
+
+Resource usage summary:
+
+    CPU time :                                   0.54 sec.
+    Max Memory :                                 -
+    Average Memory :                             -
+    Total Requested Memory :                     500.00 GB
+    Delta Memory :                               -
+    Max Swap :                                   -
+    Max Processes :                              4
+    Max Threads :                                5
+    Run time :                                   11 sec.
+    Turnaround time :                            186 sec.
+
+The output (if any) is above this job summary.
+

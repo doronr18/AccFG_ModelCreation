@@ -6,6 +6,7 @@
 #   3   build_pattern_clusters.py         Bernoulli-mixture clusters
 #   4   label_clusters.py                 cluster FG labels
 #   5   assign_clusters_to_models.py      whole clusters -> models, coverage report
+#   6   molecule_lineage.py               per-cid table: SMILES, FGs, cluster(s), model(s)
 #
 # Submit with:   bsub < molecule-fg-data/pipeline.lsf
 # (the "<" is required: `bsub pipeline.lsf` runs the file as a plain command and ignores
@@ -43,16 +44,23 @@
 set -euo pipefail
 
 # ---- edit these ---------------------------------------------------------------------
-PIPELINE=$HOME/molecule-fg-data          # this folder, as uploaded to the cluster
-JSONL_DIR=/path/to/jsonl                 # the processed_Compound_*.jsonl files
+PIPELINE=/dccstor/amd/brandi/AccFG_ModelCreation/molecule-fg-data         # this folder, as uploaded to the cluster
+JSONL_DIR=/dccstor/amd/datasets/pubchem
+WORK=/dccstor/amd/brandi/scratch               # the processed_Compound_*.jsonl files
 GLOB='processed_Compound_*.jsonl'
 TARGET=500000                            # molecules to sample (salts excluded)
-WORK=/path/to/scratch/fg_run             # stage-1 outputs; scratch is better than $HOME
 MAX_COMPONENTS_TRY="12 16 24 32 48"      # cluster counts to try, smallest first
+                                         # (more models need more clusters: each must have
+                                         #  MIN_EXCLUSIVE molecules of its own; see README)
 PRUNE_THRESHOLD=0.001                    # drop clusters with mixing weight <= this
 TOLERANCE=0.02                           # allowed |coverage - target| per model
-MIN_EXCLUSIVE=0.01                       # share of molecules each model must have alone
+MIN_EXCLUSIVE=0.03                       # share of molecules each model must have alone
+                                         # (3%: 10 models x 3% = 30% private, 70% shareable;
+                                         #  every target_coverage must be >= this, and none can
+                                         #  exceed 1 - the other models' shares, about 0.73)
 SEED=0
+HOLDOUT_FRACTION=0.2                     # share of clustered molecules held out as the test split
+SPLIT_BY=pattern                         # hold out whole FG patterns, or whole clusters (cluster)
 # module load python/3.11                # or: source ~/miniforge3/bin/activate accfg
 # --------------------------------------------------------------------------------------
 
@@ -125,6 +133,12 @@ if [ "$rc" -eq 3 ]; then
     echo
     echo "No value in MAX_COMPONENTS_TRY met the rules: see $OUT/assignment_warnings.txt."
     echo "csv_outputs holds the last try. Add larger values and resubmit; stage 1 resumes."
+fi
+
+if [ "$rc" -eq 0 ]; then
+    stage "lineage: one row per molecule, SMILES to model(s)"
+    python "$PIPELINE/molecule_lineage.py" --fg-dir "$FG_DIR" --parquet \
+           --holdout-fraction "$HOLDOUT_FRACTION" --split-by "$SPLIT_BY" --split-seed "$SEED"
 fi
 
 echo "finished $(date)  (exit status $rc)"

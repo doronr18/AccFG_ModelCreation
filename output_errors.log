@@ -1,0 +1,67 @@
+Lookup: in-domain mean 0 (std 0.05), out-of-domain mean 1 (std 0.05)
+Small Statistical: in-domain mean 1 (std 0.05), out-of-domain mean 1.15 (std 0.05)
+Small Transformer-Statistical: in-domain mean 0.6 (std 0.05), out-of-domain mean 0.75 (std 0.05)
+Small Transformer-Finetuned: in-domain mean 0.3 (std 0.05), out-of-domain mean 0.45 (std 0.05)
+Large Transformer-Finetuned: in-domain mean 0.15 (std 0.05), out-of-domain mean 0.3 (std 0.05)
+LLM: in-domain mean 0.6 (std 0.05), out-of-domain mean 0.75 (std 0.05)
+499645 molecules, 314248 unique FG patterns, 534 FGs (1 no-FG pattern(s) left out)
+Lookup: clipped 10470 errors below 0.0
+Large Transformer-Finetuned: clipped 443 errors below 0.0
+Wrote molecule-model errors to /dccstor/amd/brandi/AccFG_ModelCreation/molecule-fg-data/csv_outputs/molecule_model_error_table.csv
+Wrote pattern-model errors to /dccstor/amd/brandi/AccFG_ModelCreation/molecule-fg-data/csv_outputs/pattern_model_error_table.csv
+                   model_name domain_flag  n_molecules  target_mean  sampled_mean  target_std  sampled_std
+                       Lookup          in        20961         0.00      0.019922        0.05     0.029184
+                       Lookup         out       478684         1.00      1.000023        0.05     0.049999
+            Small Statistical          in       173643         1.00      1.000001        0.05     0.050025
+            Small Statistical         out       326002         1.15      1.149967        0.05     0.050002
+Small Transformer-Statistical          in       372453         0.60      0.600007        0.05     0.050003
+Small Transformer-Statistical         out       127192         0.75      0.750035        0.05     0.049999
+  Small Transformer-Finetuned          in       368174         0.30      0.299984        0.05     0.049977
+  Small Transformer-Finetuned         out       131471         0.45      0.450011        0.05     0.049991
+  Large Transformer-Finetuned          in       332203         0.15      0.150008        0.05     0.049982
+  Large Transformer-Finetuned         out       167442         0.30      0.300001        0.05     0.049996
+                          LLM          in       323054         0.60      0.600002        0.05     0.049975
+                          LLM         out       176591         0.75      0.750056        0.05     0.050003
+
+------------------------------------------------------------
+Sender: LSF System <lsfadmin@cccxc554>
+Subject: Job 2428048: <python3 molecule-fg-data/error_distributions.py> in cluster <CCCFP15Cluster> Done
+
+Job <python3 molecule-fg-data/error_distributions.py> was submitted from host <ccc-login3> by user <brandiransom> in cluster <CCCFP15Cluster> at Fri Nov  6 03:18:53 2026
+Job was executed on host(s) <cccxc554>, in queue <normal>, as user <brandiransom> in cluster <CCCFP15Cluster> at Fri Nov  6 03:18:53 2026
+</u/brandiransom> was used as the home directory.
+</dccstor/amd/brandi/AccFG_ModelCreation> was used as the working directory.
+Started at Fri Nov  6 03:18:53 2026
+Terminated at Fri Nov  6 03:39:02 2026
+Results reported at Fri Nov  6 03:39:02 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+python3 molecule-fg-data/error_distributions.py
+------------------------------------------------------------
+
+Successfully completed.
+
+Resource usage summary:
+
+    CPU time :                                   6665.71 sec.
+    Max Memory :                                 2 GB
+    Average Memory :                             1.53 GB
+    Total Requested Memory :                     -
+    Delta Memory :                               -
+    Max Swap :                                   -
+    Max Processes :                              3
+    Max Threads :                                10
+    Run time :                                   1209 sec.
+    Turnaround time :                            1209 sec.
+
+The output (if any) is above this job summary.
+
+
+
+PS:
+
+Read file <error_errors.log> for stderr output of this job.
+
