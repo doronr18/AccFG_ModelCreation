@@ -50,9 +50,14 @@ WORK=/dccstor/amd/brandi/scratch               # the processed_Compound_*.jsonl 
 GLOB='processed_Compound_*.jsonl'
 TARGET=500000                            # molecules to sample (salts excluded)
 MAX_COMPONENTS_TRY="12 16 24 32 48"      # cluster counts to try, smallest first
+                                         # (more models need more clusters: each must have
+                                         #  MIN_EXCLUSIVE molecules of its own; see README)
 PRUNE_THRESHOLD=0.001                    # drop clusters with mixing weight <= this
 TOLERANCE=0.02                           # allowed |coverage - target| per model
-MIN_EXCLUSIVE=0.01                       # share of molecules each model must have alone
+MIN_EXCLUSIVE=0.03                       # share of molecules each model must have alone
+                                         # (3%: 10 models x 3% = 30% private, 70% shareable;
+                                         #  every target_coverage must be >= this, and none can
+                                         #  exceed 1 - the other models' shares, about 0.73)
 SEED=0
 HOLDOUT_FRACTION=0.2                     # share of clustered molecules held out as the test split
 SPLIT_BY=pattern                         # hold out whole FG patterns, or whole clusters (cluster)

@@ -61,7 +61,7 @@ MODEL_ASSIGNMENTS = OUTPUT_DIR / 'model_assignments.csv'
 LINEAGE = OUTPUT_DIR / 'molecule_lineage.csv'
 
 COLUMNS = ['cid', 'smiles', 'status', 'pattern_index', 'n_fgs', 'fgs',
-           'primary_cluster', 'clusters', 'models', 'split']
+           'primary_cluster', 'clusters', 'models', 'split', 'split_pattern', 'split_cluster']
 
 
 def read_smiles(fg_dir: Path | None) -> pd.DataFrame:
@@ -192,7 +192,11 @@ def main(argv=None) -> int:
     table.loc[not_clustered, ['primary_cluster', 'clusters', 'models']] = pd.NA
     for col in ('pattern_index', 'n_fgs', 'primary_cluster'):
         table[col] = table[col].astype('Int64')
-    table['split'] = assign_split(table, args.holdout_fraction, args.split_by, args.split_seed)
+    # Both splits are always written, so one pipeline run can be evaluated either way;
+    # `split` is the one chosen with --split-by.
+    for by in ('pattern', 'cluster'):
+        table[f'split_{by}'] = assign_split(table, args.holdout_fraction, by, args.split_seed)
+    table['split'] = table[f'split_{args.split_by}']
     table = table[COLUMNS]
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

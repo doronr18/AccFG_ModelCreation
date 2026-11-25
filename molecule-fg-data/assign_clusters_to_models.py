@@ -428,6 +428,18 @@ def main(argv=None) -> int:
 
     cluster_summary = pd.read_csv(CLUSTER_SUMMARY)
     model_specs = pd.read_csv(MODEL_SPECS)
+    # A blank or non-numeric target (e.g. a template whose coverage is not filled in yet) would
+    # otherwise reach the solver as NaN and fail with an unclear message.
+    if 'target_coverage' not in model_specs.columns:
+        print(f'ERROR: {MODEL_SPECS.name} has no target_coverage column.', file=sys.stderr)
+        return 2
+    targets = pd.to_numeric(model_specs['target_coverage'], errors='coerce')
+    bad = model_specs.loc[targets.isna() | (targets < 0) | (targets > 1), 'model_name'].tolist()
+    if bad:
+        print(f'ERROR: {MODEL_SPECS.name}: target_coverage must be a fraction between 0 and 1 for '
+              f'every model; missing or invalid for {bad}.', file=sys.stderr)
+        return 2
+    model_specs['target_coverage'] = targets
     pattern_file = OUTPUT_DIR / 'pattern_clusters.csv'
     pattern_clusters = pd.read_csv(pattern_file, dtype=TEXT_COLUMNS) if pattern_file.exists() else pd.DataFrame()
     if pattern_clusters.empty:
