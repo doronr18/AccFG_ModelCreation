@@ -50,6 +50,8 @@ WORK=/dccstor/amd/brandi/scratch               # the processed_Compound_*.jsonl 
 GLOB='processed_Compound_*.jsonl'
 TARGET=500000                            # molecules to sample (salts excluded)
 MAX_COMPONENTS_TRY="12 16 24 32 48"      # cluster counts to try, smallest first
+                                         # (more models need more clusters: each must have
+                                         #  MIN_EXCLUSIVE molecules of its own; see README)
 PRUNE_THRESHOLD=0.001                    # drop clusters with mixing weight <= this
 TOLERANCE=0.02                           # allowed |coverage - target| per model
 MIN_EXCLUSIVE=0.01                       # share of molecules each model must have alone

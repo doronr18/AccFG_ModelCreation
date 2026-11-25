@@ -314,6 +314,15 @@ The file contains one row per model:
 - `avg_error_in` — the model's average in-domain error, or `none` for exact in-domain (stage 6)
 - `avg_error_out` — optional average out-of-domain error (stage 6; required when `avg_error_in` is `none`)
 - `std_error_in` — optional std of both error distributions (stage 6; default 0.05)
+- any other columns (for example `compute_cost`, `time_penalty`, `n_params`, `n_params_active`, used by the routing agent) are ignored here
+
+Stage 5 stops with a clear error, naming the models, when `target_coverage` is blank, not a number, or outside 0–1 (for example in a template whose coverage has not been filled in yet).
+
+### Ten models: `model_specs_generic.csv`
+
+`model_specs_generic.csv` in this folder is a 10-model template: Lookup plus nine real model types (QSAR, graph and 3D networks, chemical language models and LLMs), with `compute_cost` set from each model's parameter count. `target_coverage` is left blank to be filled in; `avg_error_in` / `avg_error_out` are draft values. Copy it to `csv_outputs/model_specs.csv` before running the pipeline. Parameter counts and their sources are in `model_specs_generic_sources.csv`.
+
+Nothing in stages 5–6 depends on the number of models, but more models make the cluster assignment harder: every model needs `MIN_EXCLUSIVE` (1%) of the molecules that only it covers, and clusters are assigned whole, so with 10 models the first value in `MAX_COMPONENTS_TRY` (12 clusters) may be too coarse and `pipeline.lsf` moves on to 16, 24, ... clusters. `pipeline.lsf` prints which cluster count it kept. Lowering `MIN_EXCLUSIVE` keeps the cluster count down.
 
 Important modeling note:
 
