@@ -1,7 +1,7 @@
 model_name,target_coverage,avg_error_in,avg_error_out,compute_cost,compute_cost_total,compute_cost_active,time_penalty,n_params,n_params_active,base6
 Lookup,,none,1.0,0.10,0.10,0.10,0.10,0,0,1
 Ridge QSAR,,0.8,,0.18,0.18,0.18,0.18,218,218,1
-Random Forest QSAR,,0.6,,0.53,0.53,0.53,0.53,3150000,3150000,0
+Random Forest QSAR,,0.6,,0.33,0.33,0.33,0.33,12700,12700,0
 Chemprop D-MPNN,,0.35,,0.45,0.45,0.45,0.45,355201,355201,1
 DimeNet++,,0.3,,0.51,0.51,0.51,0.51,1885830,1885830,0
 ChemBERTa-2,,0.4,,0.54,0.54,0.54,0.54,3425343,3425343,1
